@@ -559,7 +559,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function copyToExcel(){
     if(isCopying)return;if(!processedData.length){showToast('No data available to copy.','warning');return;}isCopying=true;
-    try{const headers=FORMATS[currentFormat].headers;const lines=[];processedData.forEach(r=>lines.push(headers.map(h=>String(r[h]??'').replace(/\r?\n/g,' ')).join('\t')));await copyText(lines.join('\n'));showToast(`${processedData.length} rows copied. Ready to paste into Excel.`,'success');}
+    try{
+      // Exclude SR NO. from copied columns, but leave the on-screen report unchanged.
+      const headers=FORMATS[currentFormat].headers.filter(h => !/^sr\s*no\.?$/i.test(String(h).trim()));
+      const lines=[];
+      processedData.forEach(r=>lines.push(headers.map(h=>String(r[h]??'').replace(/\r?\n/g,' ')).join('\t')));
+      await copyText(lines.join('\n'));
+      showToast(`${processedData.length} rows copied without SR NO. Ready to paste into Excel.`,'success');
+    }
     catch(e){console.error(e);showToast('Copy failed.','warning')}finally{setTimeout(()=>isCopying=false,500)}
   }
 
