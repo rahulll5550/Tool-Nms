@@ -3,7 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const excelInput = $('excelInput');
   const btnSampleData = $('btnSampleData'), btnClearInput = $('btnClearInput');
   const btnProcess = $('btnProcess'), btnClearAll = $('btnClearAll');
-  const btnCopyExcel = $('btnCopyExcel'), btnDownloadExcel = $('btnDownloadExcel');
+  const btnCopyExcel = $('btnCopyExcel');
   const chkMergeTrainLoco = $('chkMergeTrainLoco'), lblMergeTrainLoco = $('lblMergeTrainLoco');
   const chkCleanPrefix = $('chkCleanPrefix'), chkTrimText = $('chkTrimText'), chkPreserveBlank = $('chkPreserveBlank');
   const colSelect = $('colSelect'), patternSelect = $('patternSelect');
@@ -39,7 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   let currentFormat = 'postCommissioning';
-  let rawRows = [], sourceHeaders = [], headerless = false, processedData = [], filteredData = [], isCopying = false, isExporting = false;
+  let rawRows = [], sourceHeaders = [], headerless = false, processedData = [], filteredData = [], isCopying = false;
 
   function norm(v){ return String(v ?? '').trim().toLowerCase().replace(/\s+/g,' '); }
   function isDateLike(v){ return /^(?:\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|\d{4}[-\/]\d{1,2}[-\/]\d{1,2})$/.test(String(v ?? '').trim()); }
@@ -111,6 +111,18 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function cleanRemark(v){return String(v??'').replace(/[ \t]*\n[ \t]*/g,' ').replace(/[ \t]{2,}/g,' ').trim();}
+
+  function cleanTrailingItemNumber(v){
+    // Remove trailing numbered-list markers like "... Offline. 2."
+    // Keep meaningful numbers inside times, locations, and sentences.
+    let text = cleanRemark(v);
+    let previous;
+    do {
+      previous = text;
+      text = text.replace(/\s+\d{1,3}\s*[.)]\s*$/, '').trim();
+    } while (text !== previous);
+    return text;
+  }
 
   function splitIssues(text,pattern,removeNumbering){
     const value=String(text??'').replace(/\r\n/g,'\n').replace(/\r/g,'\n').trim();
@@ -256,9 +268,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function normalizeLocoFaultType(text){
-    const v=cleanNumberedValue(text);
-    if(/^FS\s*-\s*SR$/i.test(v)) return 'SR';
-    if(/^FS\s*-\s*LS$/i.test(v)) return 'LS';
+    const v=cleanNumberedValue(text).trim();
+    // Normalize FS - SR / FS - LS including suffixes such as "- OS".
+    if(/\bFS\s*-\s*SR\b/i.test(v)) return 'SR';
+    if(/\bFS\s*-\s*LS\b/i.test(v)) return 'LS';
     return v;
   }
 
@@ -511,7 +524,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const cause=getIssueValue(base.__reasonRaw,num,i,'');
           item['STATION NAME']=cleanNumberedValue(st);
           item['Fault Type']=normalizeLocoFaultType(failure);
-          item['NMS Observations']=cleanRemark(description);
+          item['NMS Observations']=cleanTrailingItemNumber(description);
           item['Time of Fault']=extractTime(item['NMS Observations']);
           item['Preliminary Cause Analysis as per NMS Data']=cleanNumberedValue(cause);
           item.__isSplit=issueItems.length>1; item.__splitIndex=i+1; item.__splitTotal=issueItems.length;
@@ -523,7 +536,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     filteredData=[...processedData]; updateMetrics(inputCount,processedData.length,splitCount); renderOutputTable(); generateDashboardData();
-    btnCopyExcel.disabled=btnDownloadExcel.disabled=processedData.length===0;tableSearch.disabled=processedData.length===0;
+    btnCopyExcel.disabled=processedData.length===0;tableSearch.disabled=processedData.length===0;
     showToast(`Processed: ${inputCount} received, ${processedData.length} generated (${splitCount} issues separated)`,'success');
   }
 
@@ -546,56 +559,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function copyToExcel(){
     if(isCopying)return;if(!processedData.length){showToast('No data available to copy.','warning');return;}isCopying=true;
-    try{const headers=FORMATS[currentFormat].headers;const lines=[headers.join('\t')];processedData.forEach(r=>lines.push(headers.map(h=>String(r[h]??'').replace(/\r?\n/g,' ')).join('\t')));await copyText(lines.join('\n'));showToast(`${processedData.length} rows copied. Ready to paste into Excel.`,'success');}
+    try{const headers=FORMATS[currentFormat].headers;const lines=[];processedData.forEach(r=>lines.push(headers.map(h=>String(r[h]??'').replace(/\r?\n/g,' ')).join('\t')));await copyText(lines.join('\n'));showToast(`${processedData.length} rows copied. Ready to paste into Excel.`,'success');}
     catch(e){console.error(e);showToast('Copy failed.','warning')}finally{setTimeout(()=>isCopying=false,500)}
   }
 
-  function exportExcel(){
-    if(isExporting)return;if(!processedData.length){showToast('No data available to export.','warning');return;}if(typeof XLSX==='undefined'){showToast('Excel library failed to load. Refresh the page and try again.','warning');return;}
-    isExporting=true;const old=btnDownloadExcel.textContent;btnDownloadExcel.disabled=true;btnDownloadExcel.textContent='Exporting...';
-    try{
-      const headers=FORMATS[currentFormat].headers;
-      const exportRows=processedData.map(r=>headers.map(h=>String(r[h]??'')));
-      const ws=XLSX.utils.aoa_to_sheet([headers,...exportRows]);
-      const border={top:{style:'thin',color:{rgb:'FFB7B7B7'}},bottom:{style:'thin',color:{rgb:'FFB7B7B7'}},left:{style:'thin',color:{rgb:'FFB7B7B7'}},right:{style:'thin',color:{rgb:'FFB7B7B7'}}};
-
-      if(currentFormat==='postCommissioning'){
-        const headerStyle={font:{name:'Calibri',sz:11,bold:true,color:{rgb:'FF000000'}},fill:{fgColor:{rgb:'FFFFD966'}},alignment:{horizontal:'center',vertical:'center',wrapText:true},border};
-        const dataStyle=c=>({font:{name:'Calibri',sz:11,bold:c===2,color:{rgb:'FF000000'}},fill:c===2?{fgColor:{rgb:'FF00FF00'}}:undefined,alignment:{horizontal:c===3?'left':'center',vertical:c===3?'top':'center',wrapText:true},border});
-
-        for(let R=0;R<=exportRows.length;R++)for(let C=0;C<4;C++){const ref=XLSX.utils.encode_cell({r:R,c:C});const cell=ws[ref]||(ws[ref]={});cell.t='s';cell.v=String(cell.v??'');cell.s=R===0?headerStyle:dataStyle(C);cell.z='@';}
-
-        const merges=[];let start=0;
-        while(start<processedData.length){
-          const source=processedData[start].__origRowIndex;let end=start+1;
-          while(end<processedData.length&&processedData[end].__origRowIndex===source)end++;
-          if(end-start>1)[0,1,2].forEach(C=>merges.push({s:{r:start+1,c:C},e:{r:end,c:C}}));
-          start=end;
-        }
-        ws['!merges']=merges;
-        ws['!cols']=[{wch:18},{wch:15},{wch:25},{wch:90}];
-        ws['!rows']=[{hpt:28}];
-        exportRows.forEach(r=>ws['!rows'].push({hpt:Math.min(150,Math.max(30,Math.ceil(Math.max(1,r[3].length/78))*18))}));
-      }else{
-        const headerStyle={font:{name:'Calibri',sz:11,bold:true,color:{rgb:'FF000000'}},fill:{fgColor:{rgb:'FFD9EAD3'}},alignment:{horizontal:'center',vertical:'center',wrapText:true},border};
-        const dataStyle={font:{name:'Calibri',sz:11,color:{rgb:'FF000000'}},alignment:{horizontal:'left',vertical:'top',wrapText:true},border};
-        for(let R=0;R<=exportRows.length;R++)for(let C=0;C<headers.length;C++){const ref=XLSX.utils.encode_cell({r:R,c:C});const cell=ws[ref]||(ws[ref]={});cell.t='s';cell.v=String(cell.v??'');cell.s=R===0?headerStyle:dataStyle;cell.z='@';}
-        ws['!cols']=[{wch:9},{wch:14},{wch:20},{wch:20},{wch:14},{wch:16},{wch:14},{wch:18},{wch:16},{wch:60},{wch:45}];
-        ws['!rows']=[{hpt:32}];
-        exportRows.forEach(r=>ws['!rows'].push({hpt:Math.min(180,Math.max(24,Math.ceil(Math.max(1,Math.max(...r.map(x=>x.length)) / 75))*18))}));
-      }
-
-      const wb=XLSX.utils.book_new();
-      const sheetName=currentFormat==='postCommissioning'?'Transformed Data':'NMS Data Report';
-      XLSX.utils.book_append_sheet(wb,ws,sheetName);
-      const now=new Date();
-      const pad=n=>String(n).padStart(2,'0');
-      const todayStr=`${pad(now.getDate())}-${pad(now.getMonth()+1)}-${now.getFullYear()}`;
-      const formatLabel=currentFormat==='postCommissioning'?'Post_Commissioning':'NMS_Data';
-      const filename=`${formatLabel}_${todayStr}.xlsx`;
-      XLSX.writeFile(wb,filename,{bookType:'xlsx',compression:true});showToast(`Downloaded ${filename} (${exportRows.length} rows).`,'success');
-    }catch(e){console.error(e);showToast(`Export failed: ${e.message||'Please try again.'}`,'warning')}finally{setTimeout(()=>{isExporting=false;btnDownloadExcel.disabled=processedData.length===0;btnDownloadExcel.textContent=old},700)}
-  }
 
   function showToast(message,type='info'){const t=document.createElement('div');t.className=`toast toast-${type}`;t.textContent=message;toastContainer.appendChild(t);setTimeout(()=>{t.style.opacity='0';t.style.transition='opacity .25s';setTimeout(()=>t.remove(),250)},3000)}
 
@@ -612,7 +579,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ? 'Paste tab-separated data from Excel (Date, Section, Train No, Loco No, Remarks).'
       : 'Paste your Main Data sheet directly from Excel.';
 
-    processedData=[];filteredData=[];rawRows=[];sourceHeaders=[];headerless=false;excelInput.value='';tableSearch.value='';tableSearch.disabled=true;btnCopyExcel.disabled=btnDownloadExcel.disabled=true;updateMetrics(0,0,0);updateColumnDropdown([]);renderOutputTable();dashboardSection.classList.add('hidden');
+    processedData=[];filteredData=[];rawRows=[];sourceHeaders=[];headerless=false;excelInput.value='';tableSearch.value='';tableSearch.disabled=true;btnCopyExcel.disabled=true;updateMetrics(0,0,0);updateColumnDropdown([]);renderOutputTable();dashboardSection.classList.add('hidden');
   }
 
   document.querySelectorAll('input[name="dataFormat"]').forEach(r=>r.addEventListener('change',()=>setFormat(r.value)));
@@ -622,7 +589,6 @@ document.addEventListener('DOMContentLoaded', () => {
   excelInput.addEventListener('input',parseInputText);
   btnProcess.addEventListener('click',e=>{e.preventDefault();processData()});
   btnCopyExcel.addEventListener('click',e=>{e.preventDefault();copyToExcel()});
-  btnDownloadExcel.addEventListener('click',e=>{e.preventDefault();exportExcel()});
   btnClearInput.addEventListener('click',e=>{e.preventDefault();excelInput.value='';parseInputText();showToast('Input cleared.','info')});
   btnClearAll.addEventListener('click',e=>{e.preventDefault();setFormat(currentFormat);showToast('All fields reset.','info')});
 
