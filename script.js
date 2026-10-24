@@ -536,7 +536,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     filteredData=[...processedData]; updateMetrics(inputCount,processedData.length,splitCount); renderOutputTable(); generateDashboardData();
-    btnCopyExcel.disabled=processedData.length===0;tableSearch.disabled=processedData.length===0;
+    btnCopyExcel.disabled=processedData.length===0;document.getElementById('btnDownloadOutput').disabled=processedData.length===0;tableSearch.disabled=processedData.length===0;
     showToast(`Processed: ${inputCount} received, ${processedData.length} generated (${splitCount} issues separated)`,'success');
   }
 
@@ -571,6 +571,159 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
 
+  function downloadOutputCSV(){
+    if(!processedData.length){showToast('No data available to download.','warning');return;}
+    if(typeof XLSX === 'undefined'){
+      showToast('Excel export library did not load. Check your internet connection and try again.','warning');
+      return;
+    }
+
+    const isNms = currentFormat === 'nmsData';
+
+    // Match the attached Post Commissioning workbook:
+    // Section | Date | Train No/Loco No | Remark By HBL | Observation Noted in NMS
+    const postExportHeaders = [
+      'Section',
+      'Date',
+      'Train No/Loco No',
+      'Remark By HBL',
+      'Observation Noted in NMS'
+    ];
+    const nmsExportHeaders = [
+      'DATE','STATION NAME','LOCO NO','Train Number','LOCO OEM',
+      'Direction (R/N)','Time of Fault','Fault Type','NMS Observations',
+      'Preliminary Cause Analysis as per NMS Data'
+    ];
+    const headers = isNms ? nmsExportHeaders : postExportHeaders;
+
+    const findValue = (row, candidates) => {
+      for(const key of candidates){
+        if(row[key] !== undefined && row[key] !== null && String(row[key]) !== '') {
+          return String(row[key]);
+        }
+      }
+      return '';
+    };
+
+    const rows = [headers, ...processedData.map(row => {
+      if(isNms){
+        const sourceFor = {
+          'DATE':['DATE','Date'],
+          'STATION NAME':['STATION NAME','STATION NAME-1','Station Name','Station','Station Name-1'],
+          'LOCO NO':['LOCO NO','LOCO ID','Loco No','Loco ID'],
+          'Train Number':['Train Number','TRAIN NUMBER','Train No','Train No/Loco No'],
+          'LOCO OEM':['LOCO OEM','Loco OEM'],
+          'Direction (R/N)':['Direction (R/N)','Direction','UP / DN','UP/DN','DIRECTION (R/N)'],
+          'Time of Fault':['Time of Fault','TIME OF FAULT'],
+          'Fault Type':['Fault Type','FAULT TYPE'],
+          'NMS Observations':['NMS Observations','NMS Observation','NMS OBSERVATIONS'],
+          'Preliminary Cause Analysis as per NMS Data':['Preliminary Cause Analysis as per NMS Data','Preliminary Cause','PRELIMINARY CAUSE ANALYSIS AS PER NMS DATA']
+        };
+        return headers.map(h => findValue(row, sourceFor[h] || [h]));
+      }
+
+      // Post Commissioning source has separate HBL remarks and NMS observations.
+      // Use their corresponding output fields rather than merging them into Remarks.
+      const section = findValue(row, ['Section','SECTION']);
+      const date = findValue(row, ['Date','DATE']);
+      const trainLoco = findValue(row, ['Train No/Loco No','Train No / Loco No','Train No','Train No/Loco','Train/Loco No']);
+      const hblRemark = findValue(row, ['Remark By HBL','Remark by HBL','HBL Remark','Remarks','Remark']);
+      const nmsObservation = findValue(row, ['Observation Noted in NMS','Observation noted in NMS','NMS Observation','NMS Observations']);
+      return [section,date,trainLoco,hblRemark,nmsObservation];
+    })];
+
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    const headerStyle = {
+      font:{bold:true,color:{rgb:'000000'},name:'Calibri',family:2,sz:12},
+      fill:{patternType:'solid',fgColor:{rgb:'FFE699'}},
+      alignment:{horizontal:'center',vertical:'center',wrapText:true},
+      border:{
+        top:{style:'thin',color:{rgb:'000000'}},
+        bottom:{style:'thin',color:{rgb:'000000'}},
+        left:{style:'thin',color:{rgb:'000000'}},
+        right:{style:'thin',color:{rgb:'000000'}}
+      }
+    };
+    const hblHeaderStyle = {
+      font:{bold:true,color:{rgb:'000000'},name:'Calibri',family:2,sz:12},
+      fill:{patternType:'solid',fgColor:{rgb:'F8CBAD'}},
+      alignment:{horizontal:'center',vertical:'center',wrapText:true},
+      border:{
+        top:{style:'thin',color:{rgb:'000000'}},
+        bottom:{style:'thin',color:{rgb:'000000'}},
+        left:{style:'thin',color:{rgb:'000000'}},
+        right:{style:'thin',color:{rgb:'000000'}}
+      }
+    };
+    const bodyStyle = {
+      font:{name:'Calibri',family:2,sz:11,color:{rgb:'000000'}},
+      alignment:{horizontal:'center',vertical:'center',wrapText:true},
+      border:{
+        top:{style:'thin',color:{rgb:'000000'}},
+        bottom:{style:'thin',color:{rgb:'000000'}},
+        left:{style:'thin',color:{rgb:'000000'}},
+        right:{style:'thin',color:{rgb:'000000'}}
+      }
+    };
+    const trainLocoStyle = {
+      ...bodyStyle,
+      fill:{patternType:'solid',fgColor:{rgb:'00FF00'}},
+      font:{name:'Calibri',family:2,sz:11,bold:true,color:{rgb:'000000'}}
+    };
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    for(let R=range.s.r;R<=range.e.r;R++){
+      for(let C=range.s.c;C<=range.e.c;C++){
+        const addr = XLSX.utils.encode_cell({r:R,c:C});
+        if(ws[addr]) {
+          if(R===0) {
+            // Header: explicitly set Times New Roman to avoid Calibri fallback.
+            ws[addr].s = (!isNms && C===3) ? hblHeaderStyle : headerStyle;
+          } else {
+            // Highlight Train No/Loco No in bright green (column C).
+            ws[addr].s = (!isNms && C===2) ? trainLocoStyle : bodyStyle;
+          }
+          if(!isNms) {
+            ws[addr].s = {
+              ...ws[addr].s,
+              font: {
+                ...(ws[addr].s.font || {}),
+                name:'Calibri',
+                family:1
+              }
+            };
+          }
+        }
+      }
+    }
+
+    if(isNms){
+      ws['!cols']=[{wch:14},{wch:18},{wch:13},{wch:14},{wch:15},{wch:14},{wch:15},{wch:14},{wch:48},{wch:42}];
+    } else {
+      // Similar widths/proportions to the attached five-column sheet.
+      ws['!cols']=[{wch:13},{wch:14},{wch:25},{wch:58},{wch:58}];
+    }
+    ws['!rows']=[
+      {hpt:40},
+      ...processedData.map(row=>{
+        if(!isNms) {
+          const hbl = String(row['Remark By HBL'] ?? row['Remarks'] ?? '').length;
+          const obs = String(row['Observation Noted in NMS'] ?? row['NMS Observation'] ?? '').length;
+          const lines = Math.max(1, Math.ceil(hbl/72), Math.ceil(obs/72));
+          return {hpt:Math.max(24,Math.min(72,lines*15))};
+        }
+        const maxLen=Math.max(1,...headers.map(h=>String(row[h]??'').length));
+        return {hpt:Math.max(24,Math.min(90,Math.ceil(maxLen/48)*15))};
+      })
+    ];
+    ws['!autofilter']={ref:XLSX.utils.encode_range(range)};
+    ws['!freeze']={xSplit:0,ySplit:1,topLeftCell:'A2',activePane:'bottomLeft',state:'frozen'};
+
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,isNms?'NMS Data':'Post Commissioning');
+    XLSX.writeFile(wb,`Trinetra_${currentFormat}_formatted.xlsx`);
+    showToast('Formatted Excel report downloaded successfully.','success');
+  }
+
   function showToast(message,type='info'){const t=document.createElement('div');t.className=`toast toast-${type}`;t.textContent=message;toastContainer.appendChild(t);setTimeout(()=>{t.style.opacity='0';t.style.transition='opacity .25s';setTimeout(()=>t.remove(),250)},3000)}
 
   function setFormat(format){
@@ -586,7 +739,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ? 'Paste tab-separated data from Excel (Date, Section, Train No, Loco No, Remarks).'
       : 'Paste your Main Data sheet directly from Excel.';
 
-    processedData=[];filteredData=[];rawRows=[];sourceHeaders=[];headerless=false;excelInput.value='';tableSearch.value='';tableSearch.disabled=true;btnCopyExcel.disabled=true;updateMetrics(0,0,0);updateColumnDropdown([]);renderOutputTable();dashboardSection.classList.add('hidden');
+    processedData=[];filteredData=[];rawRows=[];sourceHeaders=[];headerless=false;excelInput.value='';tableSearch.value='';tableSearch.disabled=true;btnCopyExcel.disabled=true;document.getElementById('btnDownloadOutput').disabled=true;updateMetrics(0,0,0);updateColumnDropdown([]);renderOutputTable();dashboardSection.classList.add('hidden');
   }
 
   document.querySelectorAll('input[name="dataFormat"]').forEach(r=>r.addEventListener('change',()=>setFormat(r.value)));
@@ -596,6 +749,7 @@ document.addEventListener('DOMContentLoaded', () => {
   excelInput.addEventListener('input',parseInputText);
   btnProcess.addEventListener('click',e=>{e.preventDefault();processData()});
   btnCopyExcel.addEventListener('click',e=>{e.preventDefault();copyToExcel()});
+  document.getElementById('btnDownloadOutput').addEventListener('click',e=>{e.preventDefault();downloadOutputCSV()});
   btnClearInput.addEventListener('click',e=>{e.preventDefault();excelInput.value='';parseInputText();showToast('Input cleared.','info')});
   btnClearAll.addEventListener('click',e=>{e.preventDefault();setFormat(currentFormat);showToast('All fields reset.','info')});
 
