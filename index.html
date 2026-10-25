@@ -207,6 +207,28 @@
     </div>
     <input id="tableSearch" class="search" type="search" placeholder="Search output rows..." disabled>
     <div id="emptyState" class="empty">Process your Excel data to see the transformed table.</div>
+    <section class="card" id="faultCategorizationPanel">
+      <div class="section-heading">
+        <h2>Automatic Fault Categorization</h2>
+        <p>Set a category and sub-category once for a failure pattern. Trinetra reuses them for rows with the same Preliminary Cause Analysis as per NMS Data (falling back to NMS Observations only when the cause is blank).</p>
+      </div>
+      <div class="fault-rule-grid">
+        <label>Example Preliminary Cause / failure
+          <select id="faultExampleSelect">
+            <option value="">Choose an NMS failure example…</option>
+          </select>
+        </label>
+        <label>Fault Category
+          <input id="faultCategoryInput" type="text" placeholder="e.g. Communication Failure">
+        </label>
+        <label>Fault Sub Category
+          <input id="faultSubCategoryInput" type="text" placeholder="e.g. BJD Offline">
+        </label>
+        <button id="btnSaveFaultRule" class="primary" type="button">Save & Apply Rule</button>
+      </div>
+      <p id="faultRulesInfo" class="muted">Saved rules will be reused in this browser for future conversions.</p>
+    </section>
+
     <div id="tableWrap" class="table-wrap hidden">
       <table id="outputTable">
         <thead id="tableHead"></thead>
