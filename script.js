@@ -14,9 +14,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const dashboardSection = $('dashboardSection');
   const dashboardTableBody = $('dashboardTableBody');
   const btnCopyDashboard = $('btnCopyDashboard');
+  const faultExampleSelect = $('faultExampleSelect'), faultCategoryInput = $('faultCategoryInput'), faultSubCategoryInput = $('faultSubCategoryInput'), btnSaveFaultRule = $('btnSaveFaultRule'), faultRulesInfo = $('faultRulesInfo');
 
   const MAIN_SOURCE_HEADERS = ['SR NO.','Date','Section','Train No','Loco No','LOCO FIT / UNFIT','LOCO OEM','UP / DN','Reason','Failure type','Station','Failure Description'];
-  const NMS_HEADERS = ['SR NO.','DATE','STATION NAME','LOCO NO','Train Number','LOCO OEM','Direction (R/N)','Time of Fault','Fault Type','NMS Observations','Preliminary Cause Analysis as per NMS Data'];
+  const NMS_HEADERS = ['SR NO.','DATE','STATION NAME','LOCO NO','Train Number','LOCO OEM','Direction (R/N)','Time of Fault','Fault Type','NMS Observations','Preliminary Cause Analysis as per NMS Data','Analysis Input Status ( Pending / Received)','Final Analysis Input from HBL','Fault Category','Fault Sub Category'];
   const POST_COMM_HEADERS = ['Section','Date','Train No/Loco No','Remarks'];
 
   const FORMATS = {
@@ -40,6 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let currentFormat = 'postCommissioning';
   let rawRows = [], sourceHeaders = [], headerless = false, processedData = [], filteredData = [], isCopying = false;
+  let faultCategoryRules = loadFaultCategoryRules();
 
   function norm(v){ return String(v ?? '').trim().toLowerCase().replace(/\s+/g,' '); }
   function isDateLike(v){ return /^(?:\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|\d{4}[-\/]\d{1,2}[-\/]\d{1,2})$/.test(String(v ?? '').trim()); }
@@ -391,7 +393,7 @@ document.addEventListener('DOMContentLoaded', () => {
       sr=get(/^sr\s*no/); date=get(/^date$/); station=get(/^station$/); loco=get(/^loco\s*no|^loco\s*number|^loco\s*#$/); train=get(/^train\s*no|^train\s*number|^train\s*#$/); oem=get(/^loco\s*oem$/); direction=get(/^up\s*\/\s*dn$|^direction/); reason=get(/^reason$/); failureType=get(/^failure\s*type$/); desc=get(/failure\s*description|^description$/);
       if(issueColumn>=0) desc=row.slice(issueColumn).map(v=>String(v??'')).join('\t');
     }
-    return { 'SR NO.':sr,'DATE':date,'STATION NAME':cleanNumberedValue(station),'LOCO NO':loco,'Train Number':train,'LOCO OEM':oem,'Direction (R/N)':cleanNumberedValue(direction),'Time of Fault':'','Fault Type':'','NMS Observations':'','Preliminary Cause Analysis as per NMS Data':'', __origRowIndex:rowIndex, __failureTypeRaw:failureType,__reasonRaw:reason,__stationRaw:station,__descriptionRaw:desc };
+    return { 'SR NO.':sr,'DATE':date,'STATION NAME':cleanNumberedValue(station),'LOCO NO':loco,'Train Number':train,'LOCO OEM':oem,'Direction (R/N)':cleanNumberedValue(direction),'Time of Fault':'','Fault Type':'','NMS Observations':'','Preliminary Cause Analysis as per NMS Data':'','Analysis Input Status ( Pending / Received)':'Pending','Final Analysis Input from HBL':'','Fault Category':'','Fault Sub Category':'', __origRowIndex:rowIndex, __failureTypeRaw:failureType,__reasonRaw:reason,__stationRaw:station,__descriptionRaw:desc };
   }
 
   function generateDashboardData() {
@@ -471,6 +473,87 @@ document.addEventListener('DOMContentLoaded', () => {
     dashboardSection.classList.remove('hidden');
   }
 
+  function loadFaultCategoryRules(){
+    try { return JSON.parse(localStorage.getItem('trinetraFaultCategoryRules') || '[]'); }
+    catch(e) { return []; }
+  }
+
+  function saveFaultCategoryRules(){
+    try { localStorage.setItem('trinetraFaultCategoryRules', JSON.stringify(faultCategoryRules)); }
+    catch(e) { console.warn('Could not persist fault rules in this browser.', e); }
+    renderFaultRulePicker();
+  }
+
+  function normalizeFaultSignature(text){
+    return cleanTrailingItemNumber(String(text || '').toLowerCase())
+      .replace(/\btime\s*[-:]?\s*\d{1,2}:\d{2}:\d{2}\b/gi, 'time [TIME]')
+      .replace(/\b\d{1,2}:\d{2}:\d{2}\b/g, '[TIME]')
+      .replace(/\babs(?:olute)?\s*location\s*[-:]?\s*[\d,]+\b/gi, 'abs location [LOCATION]')
+      .replace(/\blocation\s*[-:]?\s*[\d,]+\b/gi, 'location [LOCATION]')
+      .replace(/\s+/g, ' ').replace(/[.,;: -]+$/,'').trim();
+  }
+
+  function getFaultRuleKey(row){
+    const cause = String(row && row['Preliminary Cause Analysis as per NMS Data'] || '').trim();
+    const observation = String(row && row['NMS Observations'] || '').trim();
+    return normalizeFaultSignature(cause || observation);
+  }
+
+  function applyFaultCategoryRules(row){
+    const key = getFaultRuleKey(row);
+    if(!key) return row;
+    const match = faultCategoryRules.find(rule => rule.signature === key);
+    if(match){
+      row['Fault Category'] = match.category || '';
+      row['Fault Sub Category'] = match.subCategory || '';
+    }
+    return row;
+  }
+
+  function renderFaultRulePicker(){
+    if(!faultExampleSelect) return;
+    const previous = faultExampleSelect.value;
+    faultExampleSelect.innerHTML = '<option value="">Choose an NMS failure example…</option>';
+    const examples = new Map();
+    processedData.forEach((row, index) => {
+      if(currentFormat !== 'nmsData') return;
+      const signature = getFaultRuleKey(row);
+      if(signature && !examples.has(signature)){
+        examples.set(signature, {signature, text: row['NMS Observations'] || '', index});
+      }
+    });
+    [...examples.values()].forEach((example, index) => {
+      const option = document.createElement('option');
+      option.value = example.signature;
+      option.textContent = `${index+1}. ${example.text.slice(0,125)}${example.text.length>125?'…':''}`;
+      option.title = example.text;
+      faultExampleSelect.appendChild(option);
+    });
+    if([...faultExampleSelect.options].some(o => o.value === previous)) faultExampleSelect.value = previous;
+    if(faultRulesInfo) faultRulesInfo.textContent = `${faultCategoryRules.length} saved fault categorization rule(s). Rules are saved in this browser and applied when Preliminary Cause Analysis as per NMS Data matches; time/location changes are ignored where present.`;
+  }
+
+  function saveFaultCategoryRule(){
+    if(currentFormat !== 'nmsData'){
+      showToast('Switch to NMS Data format to create fault category rules.','warning');
+      return;
+    }
+    const signature = faultExampleSelect.value;
+    const category = faultCategoryInput.value.trim();
+    const subCategory = faultSubCategoryInput.value.trim();
+    if(!signature){showToast('Choose an example failure first.','warning');return;}
+    if(!category || !subCategory){showToast('Enter both Fault Category and Fault Sub Category.','warning');return;}
+    const existing = faultCategoryRules.findIndex(rule => rule.signature === signature);
+    const rule = {signature, category, subCategory, updatedAt:new Date().toISOString()};
+    if(existing >= 0) faultCategoryRules[existing] = rule;
+    else faultCategoryRules.push(rule);
+    saveFaultCategoryRules();
+    processedData.forEach(applyFaultCategoryRules);
+    filteredData = [...processedData];
+    renderOutputTable();
+    showToast('Fault category rule saved and applied to matching failures.','success');
+  }
+
   function processData(){
     const text=excelInput.value.replace(/\r/g,'').trim(); if(!text){showToast('Please paste Excel data first.','warning');return;}
     const layout = parseInputText(); if(!rawRows.length){showToast('No data rows found.','warning');return;}
@@ -535,7 +618,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
-    filteredData=[...processedData]; updateMetrics(inputCount,processedData.length,splitCount); renderOutputTable(); generateDashboardData();
+    filteredData=[...processedData]; updateMetrics(inputCount,processedData.length,splitCount); renderOutputTable(); generateDashboardData(); renderFaultRulePicker();
     btnCopyExcel.disabled=processedData.length===0;document.getElementById('btnDownloadOutput').disabled=processedData.length===0;tableSearch.disabled=processedData.length===0;
     showToast(`Processed: ${inputCount} received, ${processedData.length} generated (${splitCount} issues separated)`,'success');
   }
@@ -592,7 +675,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const nmsExportHeaders = [
       'DATE','STATION NAME','LOCO NO','Train Number','LOCO OEM',
       'Direction (R/N)','Time of Fault','Fault Type','NMS Observations',
-      'Preliminary Cause Analysis as per NMS Data'
+      'Preliminary Cause Analysis as per NMS Data',
+      'Analysis Input Status ( Pending / Received)',
+      'Final Analysis Input from HBL',
+      'Fault Category',
+      'Fault Sub Category'
     ];
     const headers = isNms ? nmsExportHeaders : postExportHeaders;
 
@@ -617,7 +704,11 @@ document.addEventListener('DOMContentLoaded', () => {
           'Time of Fault':['Time of Fault','TIME OF FAULT'],
           'Fault Type':['Fault Type','FAULT TYPE'],
           'NMS Observations':['NMS Observations','NMS Observation','NMS OBSERVATIONS'],
-          'Preliminary Cause Analysis as per NMS Data':['Preliminary Cause Analysis as per NMS Data','Preliminary Cause','PRELIMINARY CAUSE ANALYSIS AS PER NMS DATA']
+          'Preliminary Cause Analysis as per NMS Data':['Preliminary Cause Analysis as per NMS Data','Preliminary Cause','PRELIMINARY CAUSE ANALYSIS AS PER NMS DATA'],
+          'Analysis Input Status ( Pending / Received)':['Analysis Input Status ( Pending / Received)','Analysis Input Status','Pending / Received'],
+          'Final Analysis Input from HBL':['Final Analysis Input from HBL','Final Analysis Input'],
+          'Fault Category':['Fault Category'],
+          'Fault Sub Category':['Fault Sub Category','Fault Subcategory','Sub Fault Category']
         };
         return headers.map(h => findValue(row, sourceFor[h] || [h]));
       }
@@ -697,7 +788,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if(isNms){
-      ws['!cols']=[{wch:14},{wch:18},{wch:13},{wch:14},{wch:15},{wch:14},{wch:15},{wch:14},{wch:48},{wch:42}];
+      ws['!cols']=[{wch:14},{wch:18},{wch:13},{wch:14},{wch:15},{wch:16},{wch:15},{wch:14},{wch:48},{wch:42},{wch:24},{wch:42},{wch:24},{wch:24}];
     } else {
       // Similar widths/proportions to the attached five-column sheet.
       ws['!cols']=[{wch:13},{wch:14},{wch:25},{wch:58},{wch:58}];
@@ -749,6 +840,7 @@ document.addEventListener('DOMContentLoaded', () => {
   excelInput.addEventListener('input',parseInputText);
   btnProcess.addEventListener('click',e=>{e.preventDefault();processData()});
   btnCopyExcel.addEventListener('click',e=>{e.preventDefault();copyToExcel()});
+  if(btnSaveFaultRule) btnSaveFaultRule.addEventListener('click', e=>{e.preventDefault();saveFaultCategoryRule()});
   document.getElementById('btnDownloadOutput').addEventListener('click',e=>{e.preventDefault();downloadOutputCSV()});
   btnClearInput.addEventListener('click',e=>{e.preventDefault();excelInput.value='';parseInputText();showToast('Input cleared.','info')});
   btnClearAll.addEventListener('click',e=>{e.preventDefault();setFormat(currentFormat);showToast('All fields reset.','info')});
