@@ -396,6 +396,105 @@ document.addEventListener('DOMContentLoaded', () => {
     return { 'SR NO.':sr,'DATE':date,'STATION NAME':cleanNumberedValue(station),'LOCO NO':loco,'Train Number':train,'LOCO OEM':oem,'Direction (R/N)':cleanNumberedValue(direction),'Time of Fault':'','Fault Type':'','NMS Observations':'','Preliminary Cause Analysis as per NMS Data':'','Analysis Input Status ( Pending / Received)':'Pending','Final Analysis Input from HBL':'','Fault Category':'','Fault Sub Category':'', __origRowIndex:rowIndex, __failureTypeRaw:failureType,__reasonRaw:reason,__stationRaw:station,__descriptionRaw:desc };
   }
 
+  function generateDailyWhatsAppMessage() {
+    const section = $('dailyMessageSection');
+    if (!section || currentFormat !== 'nmsData' || !processedData.length) { if(section) section.classList.add('hidden'); return; }
+    section.classList.remove('hidden');
+    const uniqueLocos = new Set(), trainRuns = new Set();
+    const counts = {fsb:0, eb:0, sr:0, ls:0, both:0, foreign:0, srOffline:0, srBJD:0, srBRC:0, lsRadio:0, lsAnalysis:0};
+    const fsbCategories = new Map();
+    const ebCategories = new Map();
+    const srByLoco = new Map(), lsByLoco = new Map();
+    const textOf = r => [r['Fault Type'],r['NMS Observations'],r['Preliminary Cause Analysis as per NMS Data'],r['Final Analysis Input from HBL'],r['Fault Category'],r['Fault Sub Category']].map(v=>String(v??'')).join(' ').toUpperCase();
+    // SR/LS totals must follow the NMS Data sheet's Fault Type column only.
+    // Do not infer a mode from observations, preliminary cause, or analysis text.
+    const getNmsModeFlags = row => {
+      const faultType = String(row['Fault Type'] ?? row['Loco Fault'] ?? '').toUpperCase().replace(/[–—]/g, '-');
+      return {
+        sr: /\bSR\b|STAFF\s*RESPONSIBLE/.test(faultType),
+        ls: /\bLS\b|LOW\s*SUPERVISION/.test(faultType)
+      };
+    };
+    processedData.forEach(r => {
+      const loco = String(r['LOCO NO'] || r['Loco No'] || r['LOCO ID'] || '').trim();
+      const train = String(r['Train Number'] || r['Train No'] || '').trim();
+      const runDate = String(r['DATE'] || r['Date'] || '').trim();
+      if(loco) uniqueLocos.add(loco);
+      // Count train movements, not unique train numbers. A movement is one
+      // distinct Date + Loco + Train combination. This also retains a movement
+      // when its train number is blank but its loco number is available, while
+      // preventing split NMS failure rows for the same movement from inflating it.
+      if(loco || train) trainRuns.add([runDate, loco, train].join('|').toUpperCase());
+      const t=textOf(r), station=String(r['STATION NAME']||'').toUpperCase();
+      const isFSB=/\bFSB\b|FULL\s*SERVICE\s*BRAKE/.test(t), isEB=/\bEB\b|EMERGENCY\s*BRAKE/.test(t);
+      const {sr,ls}=getNmsModeFlags(r);
+      if(isFSB){
+        counts.fsb++;
+        // FSB reasons are not a fixed list. Build the report categories from the
+        // actual cause/analysis available on each FSB row, then fall back to the
+        // observation text. Only rows with no usable reason go to Under Analysis.
+        const rawReason = [
+          r['Final Analysis Input from HBL'],
+          r['Preliminary Cause Analysis as per NMS Data'],
+          r['Fault Sub Category'],
+          r['NMS Observations']
+        ].map(v=>String(v??'').trim()).find(v=>v && !/^(under analysis|pending|not assigned|-)$/i.test(v)) || '';
+        let reason = rawReason;
+        if(reason){
+          reason = reason.replace(/^\s*\d+\s*[.)-]\s*/, '').trim();
+          // When only a full observation is available, use its cause phrase
+          // rather than grouping every station/time variation separately.
+          const dueMatch = reason.match(/(?:due to|because of|reason\s*[:=-])\s*(.+)$/i);
+          if(dueMatch) reason = dueMatch[1];
+          reason = reason.replace(/\b(?:FSB|FULL SERVICE BRAKE)\b/gi,'')
+            .replace(/\bAPPLIED\b/gi,'').replace(/\s+/g,' ').replace(/^[,;:\- ]+|[,;:\- ]+$/g,'').trim();
+        }
+        const label = reason ? reason.charAt(0).toUpperCase()+reason.slice(1) : 'Under Analysis';
+        fsbCategories.set(label,(fsbCategories.get(label)||0)+1);
+      }
+      if(isEB){
+        counts.eb++;
+        // EB categories are dynamic too: derive each category from the actual
+        // analysis/cause for this EB failure instead of showing a fixed list.
+        const rawReason = [
+          r['Final Analysis Input from HBL'],
+          r['Preliminary Cause Analysis as per NMS Data'],
+          r['Fault Sub Category'],
+          r['NMS Observations']
+        ].map(v=>String(v??'').trim()).find(v=>v && !/^(under analysis|pending|not assigned|-)$/i.test(v)) || '';
+        let reason = rawReason;
+        if(reason){
+          reason = reason.replace(/^\s*\d+\s*[.)-]\s*/, '').trim();
+          const dueMatch = reason.match(/(?:due to|because of|reason\s*[:=-])\s*(.+)$/i);
+          if(dueMatch) reason = dueMatch[1];
+          reason = reason.replace(/\b(?:EB|EMERGENCY BRAKE)\b/gi,'')
+            .replace(/\bAPPLIED\b/gi,'').replace(/\s+/g,' ').replace(/^[,;:\- ]+|[,;:\- ]+$/g,'').trim();
+        }
+        const label = reason ? reason.charAt(0).toUpperCase()+reason.slice(1) : 'Under Analysis';
+        ebCategories.set(label,(ebCategories.get(label)||0)+1);
+      }
+      if(sr){ counts.sr++; if(loco) srByLoco.set(loco,(srByLoco.get(loco)||0)+1); if(/STCAS\s*(IS\s*)?OFFLINE|STCAS\s*OFF|OFFLINE/.test(t)){counts.srOffline++; if(/\bBJD\b/.test(station+' '+t)) counts.srBJD++; if(/\bBRC\b/.test(station+' '+t)) counts.srBRC++;} }
+      if(ls){ counts.ls++; if(loco) lsByLoco.set(loco,(lsByLoco.get(loco)||0)+1); if(/RADIO|RECEIVER/.test(t)) counts.lsRadio++; else counts.lsAnalysis++; }
+      if(/BOTH\s*TAG\s*MISS|BOTH\s*TAGS?\s*MISS/.test(t)) counts.both++;
+      if(/FOREIGN\s*TAG/.test(t)) counts.foreign++;
+    });
+    const topLoco = map => { let best='-', n=0; for(const [k,v] of map) if(v>n){best=k;n=v;} return best; };
+    const fmt=n=>String(n).padStart(2,'0');
+    const rawDates=[...new Set(processedData.map(r=>String(r.DATE||r.Date||'').trim()).filter(Boolean))];
+    const toShortDate=v=>{ const m=v.match(/(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})/); if(m){const dt=new Date(Number(m[3].length===2?'20'+m[3]:m[3]),Number(m[2])-1,Number(m[1]));return dt.toLocaleDateString('en-GB',{day:'2-digit',month:'short'});} const d=new Date(v); if(!Number.isNaN(d.getTime())) return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'}); return v; };
+    const dateInput=$('dailyReportDate');
+    if(dateInput && !dateInput.dataset.userEdited && rawDates.length) dateInput.value=rawDates.length===1?toShortDate(rawDates[0]):`${toShortDate(rawDates[0])} to ${toShortDate(rawDates[rawDates.length-1])}`;
+    const dateLabel=(dateInput?.value||'DD-MMM').trim();
+    const availability=($('dailyAvailability')?.value||'').trim() || 'Not entered';
+    const div=($('dailyDivision')?.value||'WR - BRC DIVISION').trim();
+    const hours=($('dailyHours')?.value||'00hrs to 23:59 Hrs').trim();
+    const srOther=Math.max(0,counts.sr-counts.srOffline);
+    const ebLines=[...ebCategories.entries()].sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0])).map(([name,count],i)=>`${i+1}. ${name}: ${fmt(count)}`).join('\n');
+    const fsbLines=[...fsbCategories.entries()].sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0])).map(([name,count],i)=>`${i+1}. ${name}: ${fmt(count)}`).join('\n');
+    const message=`*${div}*\n${dateLabel} | ${hours}\n\n*Locos Run:* ${uniqueLocos.size}\n*Trains Run:* ${trainRuns.size}\n\n*EB: ${fmt(counts.eb)}*\n${ebLines || '1. Under Analysis: 00'}\n\n*FSB: ${fmt(counts.fsb)}*\n${fsbLines || '1. Under Analysis: 00'}\n\n*SR Mode: ${fmt(counts.sr)}*\n1. SR due to Legitimate / Other Issues: ${fmt(srOther)}\n2. SR due to STCAS Offline: ${fmt(counts.srOffline)}\n   - BJD Offline: ${fmt(counts.srBJD)}\n   - BRC Offline: ${fmt(counts.srBRC)}\n\n*LS Mode: ${fmt(counts.ls)}*\n1. Loco Radio / Receiver Issues: ${fmt(counts.lsRadio)}\n2. Under Analysis: ${fmt(counts.lsAnalysis)}\n\n*Both Tag Missing: ${fmt(counts.both)}*\n*Foreign Tag: ${fmt(counts.foreign)}*\n\n*Availability (FS + OS): ${availability}*\n\n*In which Loco more SR observed:* ${topLoco(srByLoco)}\n*In which Loco more LS observed:* ${topLoco(lsByLoco)}`;
+    $('dailyMessageOutput').value=message;
+  }
+
   function generateDashboardData() {
     if (!processedData.length) {
       dashboardSection.classList.add('hidden');
@@ -429,8 +528,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const isFSB = /\bFSB\b|FULL\s*SERVICE\s*BRAKE/.test(combinedText);
       const isEB = /\bEB\b|EMERGENCY\s*BRAKE/.test(combinedText);
-      const isSR = /\bSR\b|FS\s*-\s*SR|SPEED\s*RESTRICTION/.test(combinedText);
-      const isLS = /\bLS\b|FS\s*-\s*LS|LOCO\s*STOP/.test(combinedText);
+      // Dashboard SR/LS counts use the same source as the NMS Data report:
+      // Fault Type only. This prevents mentions in observations/causes from
+      // creating extra mode counts.
+      const nmsFaultType = String(row['Fault Type'] || row['Loco Fault'] || '').toUpperCase().replace(/[–—]/g, '-');
+      const isSR = /\bSR\b|STAFF\s*RESPONSIBLE/.test(nmsFaultType);
+      const isLS = /\bLS\b|LOW\s*SUPERVISION/.test(nmsFaultType);
 
       if (!byDate[rawDate]) {
         byDate[rawDate] = { locos: new Set(), fsb: 0, eb: 0, sr: 0, ls: 0, total: 0 };
@@ -471,6 +574,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     dashboardSection.classList.remove('hidden');
+    generateDailyWhatsAppMessage();
   }
 
   function loadFaultCategoryRules(){
@@ -618,6 +722,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
+    // Apply saved categorization rules to every newly processed batch, including older data pasted later.
+    if(currentFormat==='nmsData') processedData.forEach(applyFaultCategoryRules);
     filteredData=[...processedData]; updateMetrics(inputCount,processedData.length,splitCount); renderOutputTable(); generateDashboardData(); renderFaultRulePicker();
     btnCopyExcel.disabled=processedData.length===0;document.getElementById('btnDownloadOutput').disabled=processedData.length===0;tableSearch.disabled=processedData.length===0;
     showToast(`Processed: ${inputCount} received, ${processedData.length} generated (${splitCount} issues separated)`,'success');
@@ -811,8 +917,186 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const wb=XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb,ws,isNms?'NMS Data':'Post Commissioning');
+
+    // For NMS exports, also create a category summary sheet following the
+    // two-sided SR / LS weekly category layout in the user's reference workbook.
+    if(isNms){
+      const categoryDefinitions = [
+        {name:'Maintenance', examples:'STCAS Hardware, RFID, Foreign Tag etc'},
+        {name:'Railway', examples:'LP Operations, Railway Relay, Signal Bobbing etc'},
+        {name:'Other OEM', examples:'3 Consecutive Tag missing, Other OEM LOCO Failure, Radio issues etc'},
+        {name:'LOCO (HBL)', examples:'HBL LOCO Hardware & Equipment Failure'},
+        {name:'Planned Outage', examples:'STCAS Off during NI, Upgradation works by Railway'},
+        {name:'Unplanned Outage', examples:'OFC Cuts, STCAS off by railway, Outdoor Relay Cable cut'},
+        {name:'Desired KAVACH behaviour', examples:'PSR, KAVACH Territory exit, Desired KAVACH behaviour etc'},
+        {name:'Software & Application', examples:'Software & Application, Version Issues'},
+        {name:'Under Analysis', examples:'Fault category not assigned / needs review'}
+      ];
+      // Category report fallback classification: if Fault Category is blank or still
+      // marked Under Analysis, inspect the other NMS fields so known planned outages
+      // (e.g. NI / non-interlocking, upgradation work) are not counted as Under Analysis.
+      const normalizeCategory = (value, row) => {
+        const norm = x => String(x || '').trim().toLowerCase().replace(/\s+/g,' ');
+        const v = norm(value);
+        // First trust an explicitly assigned Fault Category. Users may enter short
+        // labels such as Planned, Unplanned, OEM, HBL, or SoftwareApplication.
+        const explicitAliases = [
+          {category:'Planned Outage', aliases:['planned','planned outage','planned outage (ni)','ni','non-interlocking','non interlocking']},
+          {category:'Unplanned Outage', aliases:['unplanned','unplanned outage']},
+          {category:'Maintenance', aliases:['maintenance','maintenance issue','manintenance issue']},
+          {category:'Railway', aliases:['railway','railway issue']},
+          {category:'Other OEM', aliases:['other oem','oem','radio issue','radio issues']},
+          {category:'LOCO (HBL)', aliases:['loco','hbl','loco hbl','loco (hbl)','loco-hbl','hbl loco']},
+          {category:'Desired KAVACH behaviour', aliases:['desired kavach behaviour','desired kavach behavior','kavach behaviour','kavach behavior']},
+          {category:'Software & Application', aliases:['software','application','softwareapplication','software & application','software and application']},
+          {category:'Under Analysis', aliases:['under analysis','pending','unassigned','']}
+        ];
+        const explicitMatch = explicitAliases.find(item => item.aliases.includes(v));
+        if(explicitMatch && v) return explicitMatch.category;
+        if(v && /\bplanned\b/.test(v) && !/\bunplanned\b/.test(v)) return 'Planned Outage';
+        if(v && /\bunplanned\b/.test(v)) return 'Unplanned Outage';
+        // Also accept a category label that includes the canonical category name.
+        const canonicalMatch = categoryDefinitions.find(c => v === norm(c.name));
+        if(canonicalMatch) return canonicalMatch.name;
+        const context = [
+          row && row['Preliminary Cause Analysis as per NMS Data'],
+          row && row['NMS Observations'],
+          row && row['Final Analysis Input from HBL'],
+          row && row['Fault Type']
+        ].map(norm).filter(Boolean).join(' | ');
+        const source = v && v !== 'under analysis' ? v : context;
+        if(!source) return 'Under Analysis';
+        // Check unplanned first to avoid classifying an explicit unplanned outage as planned.
+        if(source.includes('unplanned outage') || /\b(ofc|optical fibre|optical fiber)\b.{0,35}\b(cut|damage|break)\b/.test(source) || /\b(cable|fibre|fiber)\b.{0,25}\b(cut|damage|break)\b/.test(source) || source.includes('outdoor relay cable cut')) return 'Unplanned Outage';
+        if(source.includes('planned outage') || /\b(upgradation|upgrade|upgrading)\b.{0,50}\b(work|works|railway|ni)\b/.test(source) || /\bni\b/.test(source) || source.includes('non-interlocking') || source.includes('non interlocking') || /\bstcas\b.{0,40}\boff\b.{0,30}\b(during|for)\b.{0,20}\bni\b/.test(source)) return 'Planned Outage';
+        if(source.includes('maintenance')) return 'Maintenance';
+        if(source === 'railway' || source.includes('railway relay') || source.includes('lp operations') || source.includes('signal bobbing')) return 'Railway';
+        if(source.includes('other oem') || source.includes('radio issue') || source.includes('radio fail') || source.includes('consecutive tag missing')) return 'Other OEM';
+        if(source.includes('hbl') || source.includes('loco (hbl)')) return 'LOCO (HBL)';
+        if(source.includes('desired') || source.includes('kavach behaviour') || source.includes('kavach behavior') || source.includes('territory exit') || source.includes('psr')) return 'Desired KAVACH behaviour';
+        if(source.includes('software') || source.includes('application') || source.includes('version')) return 'Software & Application';
+        return 'Under Analysis';
+      };
+      const categoryCounts={SR:Object.fromEntries(categoryDefinitions.map(c=>[c.name,0])),LS:Object.fromEntries(categoryDefinitions.map(c=>[c.name,0]))};
+      let srTotal=0, lsTotal=0;
+      processedData.forEach(row=>{
+        const rawType=String(row['Fault Type']||'').toUpperCase();
+        let mode='';
+        if(/\bSR\b/.test(rawType)||rawType.includes('FS - SR')) mode='SR';
+        else if(/\bLS\b/.test(rawType)||rawType.includes('FS - LS')) mode='LS';
+        if(!mode) return;
+        const category=normalizeCategory(row['Fault Category'], row);
+        categoryCounts[mode][category]=(categoryCounts[mode][category]||0)+1;
+        if(mode==='SR') srTotal++; else lsTotal++;
+      });
+      const summaryRows=[
+        ['#','WK#','Total Qty - SR Mode Degradation','Category','Examples','Qty','','#','WK#','Total Qty - LS Mode Degradation','Category','Examples','Qty'],
+      ];
+      categoryDefinitions.forEach((cat,i)=>{
+        const rowNum=i+2;
+        summaryRows.push([
+          i+1, i===0?'Pasted NMS Data':'', i===0?srTotal:'', cat.name, cat.examples, categoryCounts.SR[cat.name]||0, '',
+          i+1, i===0?'Pasted NMS Data':'', i===0?lsTotal:'', cat.name, cat.examples, categoryCounts.LS[cat.name]||0
+        ]);
+      });
+      const summaryWs=XLSX.utils.aoa_to_sheet(summaryRows);
+      const border={top:{style:'thin',color:{rgb:'000000'}},bottom:{style:'thin',color:{rgb:'000000'}},left:{style:'thin',color:{rgb:'000000'}},right:{style:'thin',color:{rgb:'000000'}}};
+      const sumHeader={font:{bold:true,name:'Calibri',sz:11,color:{rgb:'000000'}},fill:{patternType:'solid',fgColor:{rgb:'FFE699'}},alignment:{horizontal:'center',vertical:'center',wrapText:true},border};
+      const sumBody={font:{name:'Calibri',sz:10,color:{rgb:'000000'}},alignment:{vertical:'center',wrapText:true},border};
+      const totalStyle={...sumBody,font:{name:'Calibri',sz:11,bold:true,color:{rgb:'000000'}},fill:{patternType:'solid',fgColor:{rgb:'D9EAD3'}},alignment:{horizontal:'center',vertical:'center',wrapText:true}};
+      const sumRange=XLSX.utils.decode_range(summaryWs['!ref']);
+      for(let R=sumRange.s.r;R<=sumRange.e.r;R++){
+        for(let C=sumRange.s.c;C<=sumRange.e.c;C++){
+          const addr=XLSX.utils.encode_cell({r:R,c:C});
+          if(!summaryWs[addr]) continue;
+          if(R===0) summaryWs[addr].s=sumHeader;
+          else summaryWs[addr].s=([2,9].includes(C)&&R===1)?totalStyle:sumBody;
+        }
+      }
+      summaryWs['!cols']=[{wch:5},{wch:17},{wch:18},{wch:25},{wch:45},{wch:9},{wch:3},{wch:5},{wch:17},{wch:18},{wch:25},{wch:45},{wch:9}];
+      summaryWs['!rows']=[{hpt:42},...categoryDefinitions.map(()=>({hpt:34}))];
+      summaryWs['!merges']=[{s:{r:1,c:1},e:{r:9,c:1}},{s:{r:1,c:2},e:{r:9,c:2}},{s:{r:1,c:8},e:{r:9,c:8}},{s:{r:1,c:9},e:{r:9,c:9}}];
+      summaryWs['!freeze']={xSplit:0,ySplit:1,topLeftCell:'A2',activePane:'bottomLeft',state:'frozen'};
+      XLSX.utils.book_append_sheet(wb,summaryWs,'Category Report');
+
+      // Also populate the category-detail worksheets, not just the summary.
+      // Each matching processed failure is written to its relevant category tab.
+      const detailHeaders = [
+        '#','Week #','DATE','STATION NAME','LOCO NO','Train Number','LOCO OEM',
+        'Direction (R/N)','Time of Fault','Fault Type','NMS Observations',
+        'Preliminary Cause Analysis as per NMS Data',
+        'Analysis Input Status ( Pending / Received)',
+        'Final Analysis Input from HBL','Fault Category','Fault Sub Category'
+      ];
+      const detailSheetNames = {
+        'Maintenance':'Manintenance Issue',
+        'Railway':'Railway',
+        'Other OEM':'Other OEM',
+        'LOCO (HBL)':'LOCO-HBL',
+        'Planned Outage':'Planned Outage',
+        'Unplanned Outage':'Unplanned Outage',
+        'Desired KAVACH behaviour':'Desired KAVACH behaviour',
+        'Software & Application':'SoftwareApplication',
+        'Under Analysis':'Under Analysis'
+      };
+      const detailField = (row, keys) => {
+        for (const key of keys) {
+          const value = row[key];
+          if (value !== undefined && value !== null && String(value).trim() !== '') return String(value);
+        }
+        return '';
+      };
+      const detailStyle = {
+        font:{name:'Calibri',sz:10,color:{rgb:'000000'}},
+        alignment:{vertical:'top',wrapText:true},
+        border
+      };
+      categoryDefinitions.forEach(cat => {
+        const matching = processedData.filter(row => normalizeCategory(row['Fault Category'], row) === cat.name);
+        const detailRows = [detailHeaders];
+        matching.forEach((row, idx) => {
+          detailRows.push([
+            idx + 1,
+            detailField(row,['Week #','WEEK#','WK#']) || 'Pasted NMS Data',
+            detailField(row,['DATE','Date']),
+            detailField(row,['STATION NAME','STATION NAME-1','Station Name','Station']),
+            detailField(row,['LOCO NO','LOCO ID','Loco No','Loco ID']),
+            detailField(row,['Train Number','TRAIN NUMBER','Train No','Train No/Loco No']),
+            detailField(row,['LOCO OEM','Loco OEM']),
+            detailField(row,['Direction (R/N)','Direction','UP / DN','UP/DN']),
+            detailField(row,['Time of Fault','TIME OF FAULT']),
+            detailField(row,['Fault Type','FAULT TYPE']),
+            detailField(row,['NMS Observations','NMS Observation','NMS OBSERVATIONS']),
+            detailField(row,['Preliminary Cause Analysis as per NMS Data','Preliminary Cause']),
+            detailField(row,['Analysis Input Status ( Pending / Received)','Analysis Input Status']) || 'Pending',
+            detailField(row,['Final Analysis Input from HBL','Final Analysis Input']),
+            cat.name,
+            detailField(row,['Fault Sub Category','Fault Subcategory','Sub Fault Category'])
+          ]);
+        });
+        const detailWs = XLSX.utils.aoa_to_sheet(detailRows);
+        const detailRange = XLSX.utils.decode_range(detailWs['!ref']);
+        const detailHeaderStyle = {
+          font:{bold:true,name:'Calibri',sz:10,color:{rgb:'000000'}},
+          fill:{patternType:'solid',fgColor:{rgb:'FFE699'}},
+          alignment:{horizontal:'center',vertical:'center',wrapText:true},
+          border
+        };
+        for(let R=detailRange.s.r; R<=detailRange.e.r; R++) {
+          for(let C=detailRange.s.c; C<=detailRange.e.c; C++) {
+            const addr=XLSX.utils.encode_cell({r:R,c:C});
+            if(detailWs[addr]) detailWs[addr].s = R===0 ? detailHeaderStyle : detailStyle;
+          }
+        }
+        detailWs['!cols']=[{wch:6},{wch:16},{wch:13},{wch:18},{wch:13},{wch:14},{wch:15},{wch:16},{wch:15},{wch:18},{wch:48},{wch:42},{wch:25},{wch:42},{wch:24},{wch:24}];
+        detailWs['!rows']=[{hpt:36},...matching.map(row=>({hpt:42}))];
+        detailWs['!autofilter']={ref:XLSX.utils.encode_range(detailRange)};
+        detailWs['!freeze']={xSplit:0,ySplit:1,topLeftCell:'A2',activePane:'bottomLeft',state:'frozen'};
+        XLSX.utils.book_append_sheet(wb,detailWs,detailSheetNames[cat.name] || cat.name);
+      });
+    }
     XLSX.writeFile(wb,`Trinetra_${currentFormat}_formatted.xlsx`);
-    showToast('Formatted Excel report downloaded successfully.','success');
+    showToast(isNms?'NMS Data and Category Report downloaded successfully.':'Formatted Excel report downloaded successfully.','success');
   }
 
   function showToast(message,type='info'){const t=document.createElement('div');t.className=`toast toast-${type}`;t.textContent=message;toastContainer.appendChild(t);setTimeout(()=>{t.style.opacity='0';t.style.transition='opacity .25s';setTimeout(()=>t.remove(),250)},3000)}
@@ -830,7 +1114,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ? 'Paste tab-separated data from Excel (Date, Section, Train No, Loco No, Remarks).'
       : 'Paste your Main Data sheet directly from Excel.';
 
-    processedData=[];filteredData=[];rawRows=[];sourceHeaders=[];headerless=false;excelInput.value='';tableSearch.value='';tableSearch.disabled=true;btnCopyExcel.disabled=true;document.getElementById('btnDownloadOutput').disabled=true;updateMetrics(0,0,0);updateColumnDropdown([]);renderOutputTable();dashboardSection.classList.add('hidden');
+    processedData=[];filteredData=[];rawRows=[];sourceHeaders=[];headerless=false;excelInput.value='';tableSearch.value='';tableSearch.disabled=true;btnCopyExcel.disabled=true;document.getElementById('btnDownloadOutput').disabled=true;updateMetrics(0,0,0);updateColumnDropdown([]);renderOutputTable();dashboardSection.classList.add('hidden');if($('dailyMessageSection'))$('dailyMessageSection').classList.add('hidden');
   }
 
   document.querySelectorAll('input[name="dataFormat"]').forEach(r=>r.addEventListener('change',()=>setFormat(r.value)));
@@ -844,6 +1128,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnDownloadOutput').addEventListener('click',e=>{e.preventDefault();downloadOutputCSV()});
   btnClearInput.addEventListener('click',e=>{e.preventDefault();excelInput.value='';parseInputText();showToast('Input cleared.','info')});
   btnClearAll.addEventListener('click',e=>{e.preventDefault();setFormat(currentFormat);showToast('All fields reset.','info')});
+
+  ['dailyDivision','dailyReportDate','dailyHours','dailyAvailability'].forEach(id=>{ const el=$(id); if(el) el.addEventListener('input',()=>{ if(id==='dailyReportDate') el.dataset.userEdited='1'; generateDailyWhatsAppMessage(); }); });
+  const btnCopyDailyMessage=$('btnCopyDailyMessage');
+  if(btnCopyDailyMessage) btnCopyDailyMessage.addEventListener('click',async()=>{ const msg=$('dailyMessageOutput')?.value||''; if(!msg) return; try{ await copyText(msg); showToast('Daily WhatsApp report copied!','success'); }catch(e){showToast('Copy failed.','warning');} });
 
   btnCopyDashboard.addEventListener('click', async e => {
     e.preventDefault();
