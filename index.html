@@ -62,7 +62,7 @@
         <input type="radio" name="dataFormat" value="nmsData">
         <span class="format-badge">NMS Format</span>
         <span class="format-title">2. NMS Data</span>
-        <span class="format-desc">Main Data → Date • Station • Loco No • Train Number • OEM • Direction • Time • Fault Type • NMS Observations • Cause</span>
+        <span class="format-desc">Main Data → NMS Data + automatic SR/LS Category Report sheet in the downloaded Excel</span>
       </label>
     </div>
   </section>
@@ -186,6 +186,21 @@
         <tbody id="dashboardTableBody"></tbody>
       </table>
     </div>
+  </section>
+
+  <section class="card hidden" id="dailyMessageSection">
+    <div class="section-title">
+      <div><h2>Daily WhatsApp Report</h2><p>Generate the operational summary from processed NMS failure rows.</p></div>
+      <div class="output-actions"><button id="btnCopyDailyMessage" class="copy" type="button">Copy Daily Message</button></div>
+    </div>
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:14px">
+      <label>Division / Header<input id="dailyDivision" type="text" value="WR - BRC DIVISION"></label>
+      <label>Report date<input id="dailyReportDate" type="text" placeholder="Auto from NMS dates (e.g. 05-Nov)"></label>
+      <label>Reporting hours<input id="dailyHours" type="text" value="00hrs to 23:59 Hrs"></label>
+      <label>Availability (manual)<input id="dailyAvailability" type="text" placeholder="e.g. 96.831%"></label>
+    </div>
+    <p class="muted" style="margin:0 0 10px">Counts, unique locos/trains and highest SR/LS loco are calculated from processed NMS rows. Availability is manual because it requires the agreed operating-time formula/source.</p>
+    <textarea id="dailyMessageOutput" rows="22" readonly style="width:100%;font-family:Consolas,monospace;white-space:pre;" placeholder="Process NMS Data to generate the daily message."></textarea>
   </section>
 
   <section class="card">
